@@ -1,6 +1,7 @@
 package terrahelp
 
 import (
+	"encoding/base64"
 	"fmt"
 
 	"github.com/hashicorp/vault/api"
@@ -84,7 +85,11 @@ func (v *DefaultVaultClient) RegisterNamedEncryptionKey(key string) error {
 
 	if !exists {
 		log.Printf("Named encryption key '%s' does not exist, creating at %s ... ", key, v.encryptKeyPath(key))
-		_, e := v.Logical().Write(v.encryptKeyPath(key), map[string]interface{}{})
+		_, e := v.Logical().Write(v.encryptKeyPath(key), map[string]interface{}{
+			"derived":               true,
+			"type":                  "aes256-gcm96",
+			"convergent_encryption": true,
+		})
 		return e
 	}
 
@@ -119,7 +124,7 @@ func (v *DefaultVaultClient) namedEncryptionKeyExists(key string) (bool, error) 
 
 // Decrypt uses the named encryption key to decrypt the supplied content
 func (v *DefaultVaultClient) Decrypt(key, ciphertext string) (string, error) {
-	kv := map[string]interface{}{"ciphertext": ciphertext}
+	kv := map[string]interface{}{"ciphertext": ciphertext, "context": v.convergentEncryptionContext(key)}
 	s, err := v.Logical().Write(v.decryptEndpoint(key), kv)
 	if err != nil {
 		return "", err
@@ -132,7 +137,7 @@ func (v *DefaultVaultClient) Decrypt(key, ciphertext string) (string, error) {
 
 // Encrypt uses the named encryption key to encrypt the supplied content
 func (v *DefaultVaultClient) Encrypt(key, b64text string) (string, error) {
-	kv := map[string]interface{}{"plaintext": b64text}
+	kv := map[string]interface{}{"plaintext": b64text, "context": v.convergentEncryptionContext(key)}
 	s, err := v.Logical().Write(v.encryptEndpoint(key), kv)
 	if err != nil {
 		return "", err
@@ -153,4 +158,16 @@ func (v *DefaultVaultClient) encryptEndpoint(key string) string {
 
 func (v *DefaultVaultClient) decryptEndpoint(key string) string {
 	return "/transit/decrypt/" + key
+}
+
+// defaults to the name of the encryption mountpoint as context. this
+// may be unsafe, if you do use the same key for multiple terraform configurations
+// in this case, you can manually set VAULT_TRANSIT_CONTEXT
+func (v *DefaultVaultClient) convergentEncryptionContext(key string) string {
+	transitContextEnv := os.Getenv("VAULT_TRANSIT_CONTEXT")
+	if transitContextEnv == "" {
+		return base64.StdEncoding.EncodeToString([]byte(key))
+	} else {
+		return base64.StdEncoding.EncodeToString([]byte(transitContextEnv))
+	}
 }
